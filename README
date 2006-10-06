@@ -1,6 +1,6 @@
 Win32-Env
 
-Allows you to get and set global system and user enviroment varialbes under Win32.
+Set and retrieve system/user enviroment variables under Win32.
 
 INSTALLATION
 

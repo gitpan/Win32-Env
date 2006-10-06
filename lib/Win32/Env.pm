@@ -1,47 +1,91 @@
 package Win32::Env;
-our $VERSION='0.01';
+our $VERSION='0.02';
 
 =head1 NAME
 
-Win32::Env - get and set global system and user enviroment varialbes under Win32.
+Win32::Env - set and retrieve global system and user environment variables under Win32.
 
 =head1 VERSION
 
-Version 0.01
+Version 0.02
 
 =head1 SYNOPSIS
 
-    use Win32::Env;
+	use Win32::Env;
 
-    my $user_path=GetEnv(ENV_USER, 'PATH');
-    # Limit PATH for other programs to system path and specified directory for 10 seconds
-    SetEnv(ENV_USER, 'PATH', 'C:\\Perl\\bin');
-    BroadcastEnv();
-    sleep(10);
-    # Restore everything back
-    SetEnv(ENV_USER, 'PATH', $user_path);
-    BroadcastEnv();
+	# Retrieving value
+	my $user_path=GetEnv(ENV_USER, 'PATH');
+	print $user_path;
+
+	# Setting new value
+	SetEnv(ENV_USER, 'PATH', 'C:\\MyBin');
+
+	# Deleting value
+	DelEnv(ENV_USER, 'PATH');
+
+	# Retrieving list of all variables in environment
+	my @vars=ListEnv(ENV_USER);
+	print(join(', ', @vars));
+
+	# Broadcasting message about our changes
+	BroadcastEnv();
 
 =cut
-
 
 use warnings;
 use strict;
 
+use Carp;
 use Win32::TieRegistry(FixSzNulls=>1);
 
+=head1 NOTES
+
+=head2 System and user variables
+
+Just like many Unix shells have global defaults and user profile, Windows store
+several sets of environment variables. Modifying system's set (see L</ENV_SYSTEM>)
+will affect every user on system, while working with user's (see L</ENV_USER>)
+will only affect current user.
+
+=head2 Fixed and variable length values
+
+While it is impossible to distinguish them by normal means (like C<%ENV> or C<cmd.exe>'s
+C<set> command, variable values could be either fixed length or variable length strings.
+Fixed length strings should always resolve to same literal value that was assigned to them, while
+variable length strings may have references to other variables in them that in form of C<%OTHER_VAR%>
+that should be expanded to values of that variables. Note "should". This expansion is not
+performed by system automatically, but must be done by program that uses variable.
+
+=cut
+
+=head1 EXPORT
+
+SetEnv GetEnv DelEnv ListEnv BroadcastEnv ENV_USER ENV_SYSTEM
+
+=cut
+
 use Exporter qw(import);
-our @EXPORT=qw(SetEnv GetEnv BroadcastEnv ENV_USER ENV_SYSTEM);
+our @EXPORT=qw(SetEnv GetEnv DelEnv ListEnv BroadcastEnv ENV_USER ENV_SYSTEM);
+
+=head1 CONSTANTS
+
+=head2 ENV_USER
+
+Used as value for C<$sys_or_usr> argument to indicate that
+you wish to work with current user's environment.
+
+=head2 ENV_SYSTEM
+
+Used as value for C<$sys_or_usr> argument to indicate that
+you wish to work with system's global environment.
+
+=cut
 
 use constant ENV_USER	=>0;
 use constant ENV_SYSTEM	=>1;
 
 use constant ENVKEY_USER	=> 'HKEY_CURRENT_USER\\Environment';
 use constant ENVKEY_SYSTEM	=> 'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment';
-
-=head1 EXPORT
-
-SetEnv GetEnv BroadcastEnv ENV_USER ENV_SYSTEM
 
 =head1 FUNCTIONS
 
@@ -57,73 +101,126 @@ sub _NWA{
 # TODO: error/sanity checks for other args
 sub _num_to_key($){
  my $sysusr=shift;
- if($sysusr==ENV_USER) { $sysusr=ENVKEY_USER; }
- elsif($sysusr==ENV_SYSTEM) { $sysusr=ENVKEY_SYSTEM; }
- else { return; } # And Carp!
- return $sysusr;
+ if(!defined($sysusr) or ($sysusr!=ENV_USER and $sysusr!=ENV_SYSTEM)){
+  local $Carp::CarpLevel=2;
+  carp((caller(1))[3], ": \$sys_or_usr argument must be either ENV_USER or ENV_SYSTEM");
+  return;
+ }
+ if($sysusr==ENV_USER) { return ENVKEY_USER; }
+ elsif($sysusr==ENV_SYSTEM) { return ENVKEY_SYSTEM; }
+ die "What are we doing there?";
 }
 
-=head2 SetEnv($sys_or_usr, $variable, $value)
+sub _is_empty{
+ my $var=shift;
+ if(!defined($var) or $var eq ''){
+  local $Carp::CarpLevel=2;
+  carp((caller(1))[3], ": \$variable argument must be defined non-empty name");
+  return 1;
+ }
+ return;
+}
 
-Sets variable in enviroment to specified value. C<$sys_or_usr> specifies either
-current user's enviroment with exported constant C<ENV_USER> or system's global environment
-with C<ENV_SYSTEM>.
+=head2 SetEnv($sys_or_usr, $variable, $value[, $expand])
+
+	SetEnv($sys_or_usr, $variable, $value);
+	SetEnv($sys_or_usr, $variable, $value, $expand);
+
+Sets variable named $variable in environment selected with $sys_or_usr (L</ENV_USER> or L</ENV_SYSTEM>)
+to specified $value. Optional $expand set to true or false value specifies if
+value should be marked as variable length string with expandable references
+or not. See L</Fixed and variable length values> for details. If $expand
+is not defined C<SetEnv()> will use default Windows behavior - any
+value that have C<%> in it will be marked as variable length.
 
 =cut
 
-sub SetEnv($$$){
- my ($sysusr, $var, $value)=@_;
+sub SetEnv{
+ my ($sysusr, $var, $value, $expand)=@_;
  $sysusr=(_num_to_key($sysusr) or return);
- $Registry->{"$sysusr\\$var"}=$value;
+ return if _is_empty($var);
+ if(!defined($expand) and defined($value)){ $expand=($value=~/%/); }
+ $expand=(defined($expand) and $expand)?Win32::TieRegistry::REG_EXPAND_SZ:undef;
+ Win32::TieRegistry->new($sysusr)->SetValue($var, $value, $expand)
 }
 
 =head2 GetEnv($sys_or_usr, $variable)
 
-Returns value of enviroment variable. Its difference from plain C<$ENV{$variable}> is that
-you can (and must) select current user's or system's global enviroment with C<$sys_or_usr>.
-It is selected with same constants as in L<#SetEnv>.
+	$value=GetEnv($sys_or_usr, $variable);
+	($value, $expand)=GetEnv($sys_or_usr, $variable);
+
+Returns pair of value of variable named $variable from environment selected
+with $sys_or_usr (L</ENV_USER> or L</ENV_SYSTEM>) and true or false value
+signifying if it is should be expanded or not (see L</Fixed and variable length values>).
 
 =cut
 
-sub GetEnv($$){
- my ($sysusr, $var, $value)=@_;
+sub GetEnv{
+ my ($sysusr, $var)=@_;
  $sysusr=(_num_to_key($sysusr) or return);
- return $Registry->{"$sysusr\\$var"};
+ return if _is_empty($var);
+ my($value, $type)=Win32::TieRegistry->new($sysusr)->GetValue($var);
+ return wantarray?($value, defined($type)?$type==Win32::TieRegistry::REG_EXPAND_SZ:undef):$value;
+}
+
+=head2 DelEnv($sys_or_usr, $variable)
+
+	DelEnv($sys_or_usr, $variable)
+
+Deletes variable named $variable from environment selected with $sys_or_usr
+(L</ENV_USER> or L</ENV_SYSTEM>).
+
+=cut
+
+sub DelEnv{
+ my ($sysusr, $var)=@_;
+ $sysusr=(_num_to_key($sysusr) or return);
+ return if _is_empty($var);
+ Win32::TieRegistry->new($sysusr)->RegDeleteValue($var);
+}
+
+=head2 ListEnv($sys_or_usr)
+
+	@list_of_variables=ListEnv($sys_or_usr);
+
+Returns list of all variables in environment selected with $sys_or_usr
+(L</ENV_USER> or L</ENV_SYSTEM>).
+
+=cut
+
+sub ListEnv{
+ my ($sysusr, $var)=@_;
+ $sysusr=(_num_to_key($sysusr) or return);
+ return Win32::TieRegistry->new($sysusr)->ValueNames;
 }
 
 =head2 BroadcastEnv()
 
-Broadcasts system message that enviroment has changed. This will make system processes responsible for
-enviroment aware of change, otherwise your changes will be noticed only on next reboot. Note that most
-user programs still won't see changes until next run and that your changes will not be available in C<%ENV>
-to either your process or any processes you spawn. Assign to C<%ENV> yourself in addition to C<SetEnv> if
-need it.
+	BroadcastEnv();
+
+Broadcasts system message that environment has changed. This will make system processes responsible for
+environment aware of change, otherwise your changes will be noticed only on next reboot. Note that most
+user programs or still won't see changes until next run and neither will their children, as they get environment
+from their parents. Your changes also will not be available in C<%ENV> to either your process or
+any processes you spawn. Assign to C<%ENV> yourself in addition to C<SetEnv()> if need it.
 
 =cut
 
 sub BroadcastEnv(){
  use constant HWND_BROADCAST	=> 0xffff;
  use constant WM_SETTINGCHANGE	=> 0x001A;
- print "Broadcasting \"Enviroment settings changed\" message...\n";
  # SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM) "Environment", SMTO_ABORTIFHUNG, 5000, &dwReturnValue);
  my $SendMessage=_NWA('user32', 'SendMessage', 'LLPP', 'L');
  $SendMessage->Call(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment');
- print "Broadcast complete.\n";
 }
 
 1;
 
 =head1 AUTHOR
 
-Oleg "Rowaa[SR13]" V. Volkov, C<< <ROWAA at cpan.org> >>
+Oleg "Rowaa[SR13]" V. Volkov, C<<<ROWAA@cpan.org>>>
 
-=head1 BUGS / TODO
-
-Only first argument to C<GetEnv>/C<SetEnv> is checked right now. Considering that functions work with
-Windows registry, more sanity checks should be added to other arguments.
-
-Any limitations of Win32::TieRegistry apply to this module too, because it is used to write all
-changes to the registry.
+=head1 BUGS
 
 Please report any bugs or feature requests to
 C<bug-win32-env at rt.cpan.org>, or through the web interface at
