@@ -1,13 +1,9 @@
 package Win32::Env;
-our $VERSION='0.02';
+our $VERSION='0.03';
 
 =head1 NAME
 
 Win32::Env - set and retrieve global system and user environment variables under Win32.
-
-=head1 VERSION
-
-Version 0.02
 
 =head1 SYNOPSIS
 
@@ -65,7 +61,7 @@ SetEnv GetEnv DelEnv ListEnv BroadcastEnv ENV_USER ENV_SYSTEM
 =cut
 
 use Exporter qw(import);
-our @EXPORT=qw(SetEnv GetEnv DelEnv ListEnv BroadcastEnv ENV_USER ENV_SYSTEM);
+our @EXPORT=qw(SetEnv GetEnv DelEnv ListEnv InsertPathEnv BroadcastEnv ENV_USER ENV_SYSTEM);
 
 =head1 CONSTANTS
 
@@ -101,17 +97,17 @@ sub _NWA{
 # TODO: error/sanity checks for other args
 sub _num_to_key($){
  my $sysusr=shift;
- if(!defined($sysusr) or ($sysusr!=ENV_USER and $sysusr!=ENV_SYSTEM)){
+ if(!defined($sysusr) or ($sysusr ne ENV_USER and $sysusr ne ENV_SYSTEM and $sysusr ne ENVKEY_USER and $sysusr ne ENVKEY_SYSTEM)){
   local $Carp::CarpLevel=2;
   carp((caller(1))[3], ": \$sys_or_usr argument must be either ENV_USER or ENV_SYSTEM");
   return;
  }
- if($sysusr==ENV_USER) { return ENVKEY_USER; }
- elsif($sysusr==ENV_SYSTEM) { return ENVKEY_SYSTEM; }
- die "What are we doing there?";
+ if($sysusr eq ENV_USER) { return ENVKEY_USER; }
+ elsif($sysusr eq ENV_SYSTEM) { return ENVKEY_SYSTEM; }
+ return $sysusr;
 }
 
-sub _is_empty{
+sub _is_empty_var{
  my $var=shift;
  if(!defined($var) or $var eq ''){
   local $Carp::CarpLevel=2;
@@ -123,25 +119,26 @@ sub _is_empty{
 
 =head2 SetEnv($sys_or_usr, $variable, $value[, $expand])
 
-	SetEnv($sys_or_usr, $variable, $value);
-	SetEnv($sys_or_usr, $variable, $value, $expand);
+	$success=SetEnv($sys_or_usr, $variable, $value);
+	$success=SetEnv($sys_or_usr, $variable, $value, $expand);
 
 Sets variable named $variable in environment selected with $sys_or_usr (L</ENV_USER> or L</ENV_SYSTEM>)
 to specified $value. Optional $expand set to true or false value specifies if
 value should be marked as variable length string with expandable references
 or not. See L</Fixed and variable length values> for details. If $expand
 is not defined C<SetEnv()> will use default Windows behavior - any
-value that have C<%> in it will be marked as variable length.
+value that have C<%> in it will be marked as variable length. Returns true
+on success and false otherwise.
 
 =cut
 
 sub SetEnv{
  my ($sysusr, $var, $value, $expand)=@_;
  $sysusr=(_num_to_key($sysusr) or return);
- return if _is_empty($var);
+ return if _is_empty_var($var);
  if(!defined($expand) and defined($value)){ $expand=($value=~/%/); }
  $expand=(defined($expand) and $expand)?Win32::TieRegistry::REG_EXPAND_SZ:undef;
- Win32::TieRegistry->new($sysusr)->SetValue($var, $value, $expand)
+ return Win32::TieRegistry->new($sysusr)->SetValue($var, $value, $expand);
 }
 
 =head2 GetEnv($sys_or_usr, $variable)
@@ -158,7 +155,7 @@ signifying if it is should be expanded or not (see L</Fixed and variable length 
 sub GetEnv{
  my ($sysusr, $var)=@_;
  $sysusr=(_num_to_key($sysusr) or return);
- return if _is_empty($var);
+ return if _is_empty_var($var);
  my($value, $type)=Win32::TieRegistry->new($sysusr)->GetValue($var);
  return wantarray?($value, defined($type)?$type==Win32::TieRegistry::REG_EXPAND_SZ:undef):$value;
 }
@@ -175,7 +172,7 @@ Deletes variable named $variable from environment selected with $sys_or_usr
 sub DelEnv{
  my ($sysusr, $var)=@_;
  $sysusr=(_num_to_key($sysusr) or return);
- return if _is_empty($var);
+ return if _is_empty_var($var);
  Win32::TieRegistry->new($sysusr)->RegDeleteValue($var);
 }
 
@@ -192,6 +189,51 @@ sub ListEnv{
  my ($sysusr, $var)=@_;
  $sysusr=(_num_to_key($sysusr) or return);
  return Win32::TieRegistry->new($sysusr)->ValueNames;
+}
+
+=head2 InsertPathEnv($sys_or_usr, $variable, $path[, $path_separator])
+
+	$success=InsertPathEnv($sys_or_usr, $variable, $path);
+	$success=InsertPathEnv($sys_or_usr, $variable, $path[, $path_separator]);
+
+One of common use of enviroment variables is to store path lists to binary, library and
+other directories like this. This function allows you to insert a path in such a variable.
+Typical usage in some kind of installation script could be like this:
+
+	InsertPathEnv(ENV_SYSTEM, PATH => $bindir);
+	InsertPathEnv(ENV_SYSTEM, PERL5LIB => $libdir);
+	BroadcastEnv();
+
+Path specified with $path will be added to $variable from environment selected with $sys_or_usr
+(L</ENV_USER> or L</ENV_SYSTEM>), using $path_separator as separators for elements on parse
+and inserting. If you do not specify a $path_separator, default system path separator
+will be detected with C<Config> module. Function returns false on failure, and true
+on success with true value being one of '1' for successful insert or '2' if specified $path
+already present in $variable.
+
+=cut
+
+sub InsertPathEnv{
+ my($sysusr, $var, $path, $psep)=@_;
+ $sysusr=(_num_to_key($sysusr) or return);
+ return if _is_empty_var($var);
+ unless(defined($path) and $path ne ''){ return; }
+ if(!defined($psep)){ require Config; $psep=$Config::Config{'path_sep'}; }
+
+ $path=~s/\//\\/g;
+ my $elements=(GetEnv($sysusr, $var) or '');
+
+ my @elements=split($psep, $elements);
+ my $found=0;
+
+ foreach(@elements){
+  $_=~s/[\\\/]$//;
+  if(lc($_) eq lc($path)){
+   return 2;
+  }
+ }
+ unless(SetEnv($sysusr, $var, join($psep, @elements, $path))) { return; }
+ return 1;
 }
 
 =head2 BroadcastEnv()
@@ -218,7 +260,7 @@ sub BroadcastEnv(){
 
 =head1 AUTHOR
 
-Oleg "Rowaa[SR13]" V. Volkov, C<<<ROWAA@cpan.org>>>
+Oleg "Rowaa[SR13]" V. Volkov, C<<ROWAA@cpan.org>>
 
 =head1 BUGS
 

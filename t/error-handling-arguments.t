@@ -1,6 +1,6 @@
 #!perl -T
 
-use Test::More tests => 11;
+use Test::More tests => 14;
 
 use lib '../lib';
 BEGIN { use_ok('Win32::Env') }
@@ -37,7 +37,9 @@ test_sys_or_usr_warn('GetEnv');
 test_sys_or_usr_warn('SetEnv');
 test_sys_or_usr_warn('ListEnv');
 test_sys_or_usr_warn('DelEnv');
+test_sys_or_usr_warn('InsertPathEnv');
 
 test_variable_warn('GetEnv');
 test_variable_warn('SetEnv');
 test_variable_warn('DelEnv');
+test_variable_warn('InsertPathEnv');

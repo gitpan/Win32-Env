@@ -1,5 +1,12 @@
 Revision history for Win32-Env
 
+0.03	2006-10-13
+	- Added InsertPathEnv() - functions that simplifies one of common
+	  tasks while working with environment variables: inserting new
+	  paths in variables like PATH or PERL5LIB. (Checks for this function
+	  added to error-handling-arguments.t as well).
+	- SetEnv() now returns value indicating success or failure.
+
 0.02    2006-10-06
 	- Removed "print"s accidentally forgotten in BroadcastEnv().
 	- Switch GetEnv()/SetEnv() to object interface to Win32::TieRegistry
@@ -11,7 +18,6 @@ Revision history for Win32-Env
           is defined and non-empty.
         - Added error-handling-arguments.t - tests to check that functions
           properly complain about lack of or bad arguments.
-
         
 0.01    2006-10-05
         - SetEnv(), GetEnv(), BroadcastEnv(). Only first argument is checked for
